@@ -101,8 +101,9 @@
   <script>
     // CDN 기본 경로 (필요 시 원하는 버전으로 바꾸세요)
     const PDFJS_CDN_BASE = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.5.136";
-    document.write(`<script src="${PDFJS_CDN_BASE}/pdf.min.js"><\/script>`);
   </script>
+  <!-- pdf.js를 정적으로 로드해서 window.pdfjsLib가 보장되도록 함 (document.write 제거) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.5.136/pdf.min.js"></script>
 </head>
 <body>
   <header>
@@ -131,21 +132,29 @@
   </main>
 
   <script>
-    // ===== pdf.js 워커 경로 설정 =====
-    // pdf.min.js 로드 이후에 workerSrc 지정
-    (function ensureWorker(){
-      const maxTry = 30;
-      let t=0; const iv = setInterval(()=>{
-        if (window.pdfjsLib) {
-          clearInterval(iv);
-          try {
-            window.pdfjsLib.GlobalWorkerOptions.workerSrc = `${PDFJS_CDN_BASE}/pdf.worker.min.js`;
-          } catch (e) {
-            console.warn('pdf.js worker 설정 실패', e);
-          }
-        } else if (++t > maxTry) { clearInterval(iv); }
-      }, 100);
-    })();
+    // ===== pdf.js 로더 & 워커 경로 보장 =====
+    // pdf.js가 로드될 때까지 대기 후 workerSrc를 설정합니다.
+    async function waitForPdfjs(){
+      if (window.pdfjsLib && window.pdfjsLib.getDocument) return true;
+      await new Promise((resolve, reject)=>{
+        let t=0, max=100; // 최대 10초 대기
+        const iv = setInterval(()=>{
+          if (window.pdfjsLib && window.pdfjsLib.getDocument){ clearInterval(iv); resolve(); }
+          else if (++t>max){ clearInterval(iv); reject(new Error('pdf.js 로딩 실패 — 네트워크 상태를 확인하세요.')); }
+        }, 100);
+      });
+      return true;
+    }
+    async function ensureWorker(){
+      await waitForPdfjs();
+      try {
+        if (!window.pdfjsLib.GlobalWorkerOptions.workerSrc) {
+          window.pdfjsLib.GlobalWorkerOptions.workerSrc = `${PDFJS_CDN_BASE}/pdf.worker.min.js`;
+        }
+      } catch (e) {
+        console.warn('pdf.js worker 설정 실패', e);
+      }
+    }
 
     // ===== 유틸 =====
     const $ = sel => document.querySelector(sel);
@@ -204,6 +213,7 @@
     btnClear.addEventListener('click', ()=>{ results.innerHTML=''; });
 
     async function handleFiles(files){
+      await ensureWorker();
       for (const file of files) {
         await renderFileCard(file);
       }
@@ -211,6 +221,7 @@
 
     // 파일 카드 생성 및 처리
     async function renderFileCard(file){
+      await ensureWorker();
       const id = 'f_'+Math.random().toString(36).slice(2,8);
       const card = document.createElement('article');
       card.className = 'card';
