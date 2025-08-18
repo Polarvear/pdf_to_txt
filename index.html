@@ -97,13 +97,15 @@
     .footer { color: var(--muted); font-size: 12px; padding: 10px 2px; }
     .kbd { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background:#f3f4f6; border:1px solid #e5e7eb; padding:2px 6px; border-radius:6px; }
   </style>
-  <!-- pdf.js (CDN) - 버전은 필요시 교체 가능 -->
+  <!-- pdf.js loader config (multi-CDN fallback) -->
   <script>
-    // CDN 기본 경로 (필요 시 원하는 버전으로 바꾸세요)
-    const PDFJS_CDN_BASE = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.5.136";
+    // 시도할 CDN 후보들 (순서대로 시도)
+    window.__PDFJS_CANDIDATES = [
+      "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.5.136/pdf.min.js",
+      "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.5.136/build/pdf.min.js",
+      "https://unpkg.com/pdfjs-dist@4.5.136/build/pdf.min.js"
+    ];
   </script>
-  <!-- pdf.js를 정적으로 로드해서 window.pdfjsLib가 보장되도록 함 (document.write 제거) -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.5.136/pdf.min.js"></script>
 </head>
 <body>
   <header>
@@ -133,11 +135,38 @@
 
   <script>
     // ===== pdf.js 로더 & 워커 경로 보장 =====
-    // pdf.js가 로드될 때까지 대기 후 workerSrc를 설정합니다.
-    async function waitForPdfjs(){
+    // 다중 CDN에서 순차적으로 pdf.js를 로드
+    async function loadPdfJS(){
       if (window.pdfjsLib && window.pdfjsLib.getDocument) return true;
+      const urls = (window.__PDFJS_CANDIDATES || []).slice();
+      for (const url of urls){
+        try {
+          await new Promise((resolve, reject)=>{
+            const s = document.createElement('script');
+            s.src = url; s.async = true; s.crossOrigin = 'anonymous';
+            const to = setTimeout(()=>{ s.remove(); reject(new Error('timeout')); }, 8000);
+            s.onload = ()=>{ clearTimeout(to); resolve(); };
+            s.onerror = ()=>{ clearTimeout(to); s.remove(); reject(new Error('load error')); };
+            document.head.appendChild(s);
+          });
+          // 성공적으로 로드됨 → 워커 URL 후보 저장
+          window.__PDFJS_WORKER_URL = url.replace('pdf.min.js','pdf.worker.min.js');
+          return true;
+        } catch(_) {
+          // 다음 후보로
+        }
+      }
+      throw new Error('pdf.js 로딩 실패 — 네트워크/CSP를 확인하세요.');
+    }
+
+    // pdf.js가 로드될 때까지 대기 + 워커 경로 설정
+    async function waitForPdfjs(){
+      if (!(window.pdfjsLib && window.pdfjsLib.getDocument)){
+        await loadPdfJS();
+      }
+      // 안전 대기 (최대 10초)
       await new Promise((resolve, reject)=>{
-        let t=0, max=100; // 최대 10초 대기
+        let t=0, max=100;
         const iv = setInterval(()=>{
           if (window.pdfjsLib && window.pdfjsLib.getDocument){ clearInterval(iv); resolve(); }
           else if (++t>max){ clearInterval(iv); reject(new Error('pdf.js 로딩 실패 — 네트워크 상태를 확인하세요.')); }
@@ -145,11 +174,14 @@
       });
       return true;
     }
+
     async function ensureWorker(){
       await waitForPdfjs();
       try {
-        if (!window.pdfjsLib.GlobalWorkerOptions.workerSrc) {
-          window.pdfjsLib.GlobalWorkerOptions.workerSrc = `${PDFJS_CDN_BASE}/pdf.worker.min.js`;
+        const current = window.pdfjsLib && window.pdfjsLib.GlobalWorkerOptions && window.pdfjsLib.GlobalWorkerOptions.workerSrc;
+        if (!current){
+          const derived = (window.__PDFJS_WORKER_URL) || "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.5.136/pdf.worker.min.js";
+          window.pdfjsLib.GlobalWorkerOptions.workerSrc = derived;
         }
       } catch (e) {
         console.warn('pdf.js worker 설정 실패', e);
